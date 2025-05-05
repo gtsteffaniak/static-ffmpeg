@@ -70,8 +70,15 @@ RUN cd harfbuzz-* && \
     -Ddefault_library=static && \
   ninja -j$(nproc) -vC build install
 
+RUN cd glib-* && \
+  meson setup build \
+    -Dbuildtype=release \
+    -Ddefault_library=static \
+    -Dlibmount=disabled && \
+  ninja -j$(nproc) -vC build install
+
 RUN cd cairo-* && \
-meson setup build \
+  meson setup build \
   -Dbuildtype=release \
   -Ddefault_library=static \
   -Dtests=disabled \
@@ -128,13 +135,6 @@ RUN cd vmaf-*/libvmaf && \
   ninja -j$(nproc) -vC build install
 # extra libs stdc++ is for vmaf https://github.com/Netflix/vmaf/issues/788
 RUN sed -i 's/-lvmaf /-lvmaf -lstdc++ /' /usr/local/lib/pkgconfig/libvmaf.pc
-
-RUN cd glib-* && \
-  meson setup build \
-    -Dbuildtype=release \
-    -Ddefault_library=static \
-    -Dlibmount=disabled && \
-  ninja -j$(nproc) -vC build install
 
 RUN cd libass-* && \
   ./configure \

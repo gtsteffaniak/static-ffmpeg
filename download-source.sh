@@ -1,6 +1,3 @@
-
-
-
 #!/bin/bash
 
 # Exit on error, undefined variable, or pipe failure
@@ -16,159 +13,95 @@ WGET_OPTS="--retry-on-host-error --retry-on-http-error=429,500,502,503 --timeout
 # Options for tar: extract, specify file, don't preserve owner
 TAR_OPTS="--no-same-owner --extract --file"
 
-# Function to fetch and unpack archives or clone git repositories
-# Arguments:
-#   $1: name (used for directory name and downloaded filename)
-#   $2: version_var (name of the variable holding the version string)
-#   $3: url_var (name of the variable holding the download URL)
-#   $4: sha256_var (name of the variable holding the expected SHA256 hash, optional)
-#   $5: commit_var (name of the variable holding the git commit hash, optional)
-#   $6: strip_components (number of path components to strip during tar extraction, optional, default 0)
+fetch_and_unpack_git() {
+  local name=$1
+  local _unused_version_var=$2
+  local url_var=$3
+  local _unused_sha256_var=${4:-}
+  local commit_var=${5:-}
+  local _unused_strip_components=${6:-0}
+
+  local url=""
+  local commit=""
+
+  [[ -n "$url_var" && ${!url_var+x} ]] && url="${!url_var}"
+  [[ -n "$commit_var" && ${!commit_var+x} ]] && commit="${!commit_var}"
+
+  if [[ -z "$url" ]]; then
+    echo "Error: URL not set for $name"
+    return 1
+  fi
+
+  for d in "$name"*; do
+    [[ -d "$d" ]] && echo "Skipping $name, directory exists: $d" && return
+  done
+
+  echo "--- Cloning $name ---"
+  git clone "$url" "$name"
+  if [[ $? -ne 0 ]]; then
+    echo "Git clone failed for $name"
+    return 1
+  fi
+
+  if [[ -n "$commit" ]]; then
+    echo "Checking out commit $commit"
+    (cd "$name" && git checkout --recurse-submodules "$commit")
+  fi
+
+  echo "--- Cloned $name ---"
+}
 fetch_and_unpack() {
   local name=$1
   local version_var=$2
   local url_var=$3
   local sha256_var=${4:-}
-  local commit_var=${5:-}
-  local strip_components=${6:-0} # New argument for strip-components
+  local _unused_commit_var=${5:-}
+  local strip_components=${6:-0}
 
-  # Dereference variable names to get actual values
-  local version=${!version_var:-}
-  local url=${!url_var}
-  local sha256=${!sha256_var:-}
-  local commit=${!commit_var:-}
+  local version=""
+  local url=""
+  local sha256=""
 
-  local dir # Target directory name
-  shopt -s nullglob
-  dirs=($name*/)
-  if [[ ${#dirs[@]} -gt 0 ]]; then
-    echo "Directory ${dirs[0]} already exists, skipping download."
-    return
-  fi
-  # Determine target directory name based on URL and strip_components
-  # Match .tar.gz, .tar.xz, .tar.bz2
-  if [[ "$url" =~ \.tar\.(gz|xz|bz2)$ ]]; then
-    if [[ "$strip_components" -gt 0 ]]; then
-        dir="${name}" # Use base name if stripping components
-    else
-        dir="${name}-${version}"
-    fi
-  # Match common git hosting patterns or .git suffix
-  elif [[ "$url" =~ \.git$ ]] || [[ "$url" =~ github\.com/|gitlab\.|bitbucket\.org/|googlesource\.com/|git\.ffmpeg\.org/|code\.videolan\.org/ ]]; then
-     dir="${name}"
-  else
-    # Fallback for other source URLs like sourceforge, xiph, gnome, etc.
-    # Try to guess based on tarball pattern again, otherwise fail.
-    if [[ "$url" =~ \.tar\.(gz|xz|bz2)$ ]]; then
-        if [[ "$strip_components" -gt 0 ]]; then
-            dir="${name}"
-        else
-            dir="${name}-${version}"
-        fi
-    elif [[ "$url" =~ \.zip$ ]]; then # Basic zip pattern (extraction not implemented here)
-        dir="${name}-${version}" # Guessing dir name for zip
-        echo "Warning: ZIP URL detected, but function doesn't auto-extract ZIPs: $url"
-        # Decide if we should proceed to download only or fail
-        echo "Cannot determine unpack directory for ZIP URL pattern: $url"
-        return 1
-    else
-        echo "Cannot determine unpack directory for URL pattern: $url"
-        return 1
-    fi
-  fi
+  [[ -n "$version_var" && ${!version_var+x} ]] && version="${!version_var}"
+  [[ -n "$url_var" && ${!url_var+x} ]] && url="${!url_var}"
+  [[ -n "$sha256_var" && ${!sha256_var+x} ]] && sha256="${!sha256_var}"
 
-  # Check if directory already exists
-  if [[ -d "$dir" ]]; then
-    echo "Skipping $name, already exists: $dir"
-    return
-  fi
-
-  echo "--- Processing $name ${version:-$commit} ---"
-
-  # Handle tarballs (.tar.gz, .tar.xz, .tar.bz2)
-  if [[ "$url" =~ \.tar\.(gz|xz|bz2)$ ]]; then
-    local ext="${BASH_REMATCH[1]}"
-    local file="${name}.tar.${ext}" # Temporary filename for download
-    local tar_opts_local="$TAR_OPTS" # Use local copy of TAR_OPTS
-
-    echo "Downloading $url to $file"
-    wget $WGET_OPTS -O "$file" "$url"
-    if [[ $? -ne 0 ]]; then
-        echo "Download failed for $url"
-        rm -f "$file" # Clean up partial download
-        return 1
-    fi
-
-    # Verify SHA256 if provided
-    if [[ -n "$sha256" ]]; then
-      echo "Verifying SHA256 for $file..."
-      echo "$sha256  $file" | sha256sum -c -
-      if [[ $? -ne 0 ]]; then
-        echo "SHA256 verification FAILED for $file"
-        rm -f "$file"
-        return 1
-      else
-        echo "SHA256 verification successful for $file"
-      fi
-    else
-      echo "Skipping SHA256 verification (not provided) for $file"
-    fi
-
-    echo "Unpacking $file..."
-    # Adjust tar options based on strip_components
-    if [[ "$strip_components" -gt 0 ]]; then
-        # Create the target directory explicitly if stripping
-        echo "Creating directory $dir for stripped components..."
-        mkdir -p "$dir"
-        tar_opts_local="$tar_opts_local --strip-components=$strip_components -C $dir"
-    fi
-    # Extract the archive
-    tar $tar_opts_local "$file"
-    if [[ $? -ne 0 ]]; then
-        echo "Unpacking failed for $file"
-        rm -f "$file"
-        # Optionally remove partially extracted dir?
-        # [[ "$strip_components" -gt 0 ]] && rm -rf "$dir"
-        return 1
-    fi
-
-    echo "Cleaning up $file..."
-    rm -f "$file"
-
-  # Handle git repositories
-  elif [[ "$url" =~ \.git$ ]] || [[ "$url" =~ github\.com/|gitlab\.|bitbucket\.org/|googlesource\.com/|git\.ffmpeg\.org/|code\.videolan\.org/ ]]; then
-    echo "Cloning $url into $dir..."
-    git clone "$url" "$dir"
-    if [[ $? -ne 0 ]]; then
-        echo "Git clone failed for $url"
-        return 1
-    fi
-
-    # Checkout specific commit if provided
-    if [[ -n "$commit" ]]; then
-      echo "Checking out commit $commit in $dir..."
-      # Use a subshell to avoid changing the main script's directory
-      (cd "$dir" && git checkout --recurse-submodules "$commit")
-      if [[ $? -ne 0 ]]; then
-          echo "Failed to checkout commit $commit in $dir"
-          # Optionally remove the cloned dir?
-          # rm -rf "$dir"
-          return 1
-      fi
-      echo "Successfully checked out commit $commit"
-    fi
-  else
-    echo "Unsupported URL format: $url"
+  if [[ -z "$url" ]]; then
+    echo "Error: URL not set for $name"
     return 1
   fi
 
-  echo "Successfully fetched and unpacked $name into $dir"
-  echo "--------------------------------------"
-  echo # Add a blank line for readability
+  local dir="${name}-${version}"
+
+  if [[ -d "$dir" ]]; then
+    echo "Skipping $name, directory exists: $dir"
+    return
+  fi
+
+  echo "--- Downloading $name ---"
+  local file="${name}.tar"
+  wget -O "$file" "$url"
+
+  if [[ -n "$sha256" ]]; then
+    echo "$sha256  $file" | sha256sum -c -
+  fi
+
+  echo "--- Extracting to $dir ---"
+  tar --no-same-owner --strip-components="$strip_components" -xf "$file"
+  rm -f "$file"
+
+  # Rename extracted dir to expected name
+  for d in "$name"*; do
+    if [[ -d "$d" && "$d" != "$dir" ]]; then
+      mv "$d" "$dir"
+      break
+    fi
+  done
+
+  echo "--- Finished $dir ---"
 }
 
 # --- Library Definitions and Fetching ---
-
 
 # bump: vorbis /VORBIS_VERSION=([\d.]+)/ https://github.com/xiph/vorbis.git|*
 # bump: vorbis after ./hashupdate Dockerfile VORBIS $LATEST
@@ -243,7 +176,7 @@ fetch_and_unpack zeromq LIBZMQ_VERSION LIBZMQ_URL LIBZMQ_SHA256
 # bump: libgme link "Source diff $CURRENT..$LATEST" https://github.com/libgme/game-music-emu/compare/$CURRENT..v$LATEST
 : "${LIBGME_URL:=https://github.com/libgme/game-music-emu.git}"
 : "${LIBGME_COMMIT:=9762cbcff3d2224ee0f8b8c41ec143e956ebad56}"
-fetch_and_unpack game-music-emu "" LIBGME_URL "" LIBGME_COMMIT
+fetch_and_unpack_git game-music-emu "" LIBGME_URL "" LIBGME_COMMIT
 
 # bump: libmodplug /LIBMODPLUG_VERSION=([\d.]+)/ fetch:https://sourceforge.net/projects/modplug-xmms/files/|/libmodplug-([\d.]+).tar.gz/
 # bump: libmodplug after ./hashupdate Dockerfile LIBMODPLUG $LATEST
@@ -441,7 +374,7 @@ fetch_and_unpack x265 X265_VERSION X265_URL X265_SHA256
 : "${X264_URL:=https://code.videolan.org/videolan/x264.git}"
 # Using commit hash as version identifier here for consistency, though not a tag/version
 : "${X264_COMMIT:=31e19f92f00c7003fa115047ce50978bc98c3a0d}"
-fetch_and_unpack x264 "" X264_URL "" X264_COMMIT
+fetch_and_unpack_git x264 "" X264_URL "" X264_COMMIT
 
 # bump: vid.stab /VIDSTAB_VERSION=([\d.]+)/ https://github.com/georgmartius/vid.stab.git|*
 # bump: vid.stab after ./hashupdate Dockerfile VIDSTAB $LATEST
@@ -458,7 +391,7 @@ fetch_and_unpack vid.stab VIDSTAB_VERSION VIDSTAB_URL VIDSTAB_SHA256
 : "${UAVS3D_URL:=https://github.com/uavs3/uavs3d.git}"
 : "${UAVS3D_COMMIT:=1fd04917cff50fac72ae23e45f82ca6fd9130bd8}"
 # Removes BIT_DEPTH 10 to be able to build on other platforms. 10 was overkill anyways. (This comment refers to build steps, not fetch)
-fetch_and_unpack uavs3d "" UAVS3D_URL "" UAVS3D_COMMIT
+fetch_and_unpack_git uavs3d "" UAVS3D_URL "" UAVS3D_COMMIT
 
 # bump: twolame /TWOLAME_VERSION=([\d.]+)/ https://github.com/njh/twolame.git|*
 # bump: twolame after ./hashupdate Dockerfile TWOLAME $LATEST
@@ -534,7 +467,7 @@ fetch_and_unpack rubberband RUBBERBAND_VERSION RUBBERBAND_URL RUBBERBAND_SHA256
 : "${LIBRTMP_URL:=https://git.ffmpeg.org/rtmpdump.git}"
 : "${LIBRTMP_COMMIT:=6f6bb1353fc84f4cc37138baa99f586750028a01}"
 # Use 'rtmpdump' as name to match cloned directory
-fetch_and_unpack rtmpdump "" LIBRTMP_URL "" LIBRTMP_COMMIT
+fetch_and_unpack_git rtmpdump "" LIBRTMP_URL "" LIBRTMP_COMMIT
 
 # bump: librabbitmq /LIBRABBITMQ_VERSION=([\d.]+)/ https://github.com/alanxz/rabbitmq-c.git|*
 # bump: librabbitmq after ./hashupdate Dockerfile LIBRABBITMQ $LATEST
@@ -593,7 +526,7 @@ fetch_and_unpack lame MP3LAME_VERSION MP3LAME_URL MP3LAME_SHA256
 # bump: libgsm link "Changelog" https://github.com/timothytylee/libgsm/blob/master/ChangeLog
 : "${LIBGSM_URL:=https://github.com/timothytylee/libgsm.git}"
 : "${LIBGSM_COMMIT:=98f1708fb5e06a0dfebd58a3b40d610823db9715}"
-fetch_and_unpack libgsm "" LIBGSM_URL "" LIBGSM_COMMIT
+fetch_and_unpack_git libgsm "" LIBGSM_URL "" LIBGSM_COMMIT
 
 # bump: fdk-aac /FDK_AAC_VERSION=([\d.]+)/ https://github.com/mstorsjo/fdk-aac.git|*
 # bump: fdk-aac after ./hashupdate Dockerfile FDK_AAC $LATEST
