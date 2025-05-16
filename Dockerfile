@@ -2,6 +2,7 @@
 # bump: alpine link "Release notes" https://alpinelinux.org/posts/Alpine-$LATEST-released.html
 ARG ALPINE_VERSION=alpine:3.21.3
 FROM $ALPINE_VERSION AS builder
+# FROM ghcr.io/ffbuilds/static-libuavs3d-alpine_edge:main as libuavs3d
 
 # Alpine Package Keeper options
 ARG APK_OPTS="--repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing/"
@@ -61,8 +62,8 @@ COPY [ "src/", "./" ]
 # -static-libgcc is needed to make gcc not include gcc_s as "as-needed" shared library which
 # cmake will include as a implicit library.
 # other options to get hardened build (same as ffmpeg hardened)
-ARG CFLAGS="-O3 -static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
-ARG CXXFLAGS="-O3 -static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
+ARG CFLAGS="-static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
+ARG CXXFLAGS="-static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
 ARG LDFLAGS="-Wl,-z,relro,-z,now"
 
 # min build removes:
@@ -217,7 +218,7 @@ RUN if [ "$(uname -m)" = "armv7l" ]; then \
     make -j$(nproc) install; \
   fi
 
-RUN cd libaribb24 && \
+RUN cd aribb24-* && \
   autoreconf -fiv && \
   ./configure \
     --enable-static \
@@ -721,13 +722,12 @@ RUN cd ffmpeg* && \
     LIBSOXR_FLAG="--enable-libsoxr"; \
     LIBSVTAV1_FLAG="--enable-libsvtav1"; \
   fi && \
-  CC="musl-gcc" && \
-    sed -i 's/add_ldexeflags -fPIE -pie/add_ldexeflags -fPIE -static-pie/' configure && \
     ./configure \
     --pkg-config-flags="--static" \
-    --extra-cflags="-fopenmp" \
+    --extra-cflags="$CFLAGS" \
+    --extra-cxxflags="$CXXFLAGS" \
+    --extra-ldexeflags="-fPIE -static-pie" \
     --extra-ldflags="-fopenmp -Wl,--allow-multiple-definition -Wl,-z,stack-size=2097152" \
-    --toolchain=hardened \
     --disable-shared \
     --disable-ffplay \
     --enable-static \

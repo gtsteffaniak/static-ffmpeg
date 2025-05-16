@@ -103,6 +103,15 @@ fetch_and_unpack() {
 
 # --- Library Definitions and Fetching ---
 
+# bump: ffmpeg /FFMPEG_VERSION=([\d.]+)/ https://github.com/FFmpeg/FFmpeg.git|*
+# bump: ffmpeg after ./hashupdate Dockerfile FFMPEG $LATEST
+# bump: ffmpeg link "Changelog" https://github.com/FFmpeg/FFmpeg/blob/n$LATEST/Changelog
+# bump: ffmpeg link "Source diff $CURRENT..$LATEST" https://github.com/FFmpeg/FFmpeg/compare/n$CURRENT..n$LATEST
+: "${FFMPEG_VERSION:=7.1.1}"
+: "${FFMPEG_URL:=https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.bz2}"
+: "${FFMPEG_SHA256:=0c8da2f11579a01e014fc007cbacf5bb4da1d06afd0b43c7f8097ec7c0f143ba}"
+fetch_and_unpack ffmpeg FFMPEG_VERSION FFMPEG_URL FFMPEG_SHA256
+
 # bump: vorbis /VORBIS_VERSION=([\d.]+)/ https://github.com/xiph/vorbis.git|*
 # bump: vorbis after ./hashupdate Dockerfile VORBIS $LATEST
 # bump: vorbis link "CHANGES" https://github.com/xiph/vorbis/blob/master/CHANGES
@@ -584,15 +593,6 @@ fetch_and_unpack vmaf VMAF_VERSION VMAF_URL VMAF_SHA256
 : "${VVENC_URL:=https://github.com/fraunhoferhhi/vvenc/archive/refs/tags/v$VVENC_VERSION.tar.gz}"
 : "${VVENC_SHA256:=9d0d88319b9c200ebf428471a3f042ea7dcd868e8be096c66e19120a671a0bc8}"
 fetch_and_unpack vvenc VVENC_VERSION VVENC_URL VVENC_SHA256
-
-# bump: ffmpeg /FFMPEG_VERSION=([\d.]+)/ https://github.com/FFmpeg/FFmpeg.git|*
-# bump: ffmpeg after ./hashupdate Dockerfile FFMPEG $LATEST
-# bump: ffmpeg link "Changelog" https://github.com/FFmpeg/FFmpeg/blob/n$LATEST/Changelog
-# bump: ffmpeg link "Source diff $CURRENT..$LATEST" https://github.com/FFmpeg/FFmpeg/compare/n$CURRENT..n$LATEST
-: "${FFMPEG_VERSION:=7.1.1}"
-: "${FFMPEG_URL:=https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.bz2}"
-: "${FFMPEG_SHA256:=0c8da2f11579a01e014fc007cbacf5bb4da1d06afd0b43c7f8097ec7c0f143ba}"
-fetch_and_unpack ffmpeg FFMPEG_VERSION FFMPEG_URL FFMPEG_SHA256
 
 # bump: cairo /CAIRO_VERSION=([\d.]+)/ https://gitlab.freedesktop.org/cairo/cairo.git|^1
 # bump: cairo after ./hashupdate Dockerfile CAIRO $LATEST
