@@ -1,6 +1,6 @@
 # bump: alpine /ALPINE_VERSION=alpine:([\d.]+)/ docker:alpine|^3
 # bump: alpine link "Release notes" https://alpinelinux.org/posts/Alpine-$LATEST-released.html
-ARG ALPINE_VERSION=alpine:3.21.3
+ARG ALPINE_VERSION=alpine:3.22
 FROM $ALPINE_VERSION AS builder
 # FROM ghcr.io/ffbuilds/static-libuavs3d-alpine_edge:main as libuavs3d
 
@@ -218,12 +218,16 @@ RUN if [ "$(uname -m)" = "armv7l" ]; then \
     make -j$(nproc) install; \
   fi
 
-RUN cd aribb24-* && \
-  autoreconf -fiv && \
-  ./configure \
-    --enable-static \
-    --disable-shared && \
-  make -j$(nproc) && make install
+RUN if [ "$MINBUILD" ]; then \
+    echo "Skipping aribb24 build"; \
+  else \
+    cd aribb24-* && \
+    autoreconf -fiv && \
+    ./configure \
+      --enable-static \
+      --disable-shared && \
+    make -j$(nproc) && make install; \
+  fi
 
 # TODO: seems to be issues with asm on musl
 RUN cd davs2-*/build/linux && \
@@ -381,7 +385,7 @@ RUN if [ "$MINBUILD" = "true" ]; then \
     make install; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+RUN if [ "$(uname -m)" = "armv7l" ]; then \
     echo "Skipping SVT-AV1 build"; \
   else \
     cd SVT-AV1-*/Build && \
@@ -712,6 +716,7 @@ RUN cd ffmpeg* && \
     LIBEXVD_FLAG="--enable-libxevd"; \
     LIBVVENC_FLAG="--enable-libvvenc"; \
     LIBJXL_FLAG="--enable-libjxl"; \
+    LIBSVT_FLAG="--enable-libsvtav1"; \
   fi && \
   if [ "$MINBUILD" != "true" ]; then \
     VPX_FLAG="--enable-libvpx"; \
@@ -720,7 +725,8 @@ RUN cd ffmpeg* && \
     LIBSSH_FLAG="--enable-libssh"; \
     RAV1E_FLAG="--enable-librav1e"; \
     LIBSOXR_FLAG="--enable-libsoxr"; \
-    LIBSVTAV1_FLAG="--enable-libsvtav1"; \
+    LIBARIBB24_FLAGS="--enable-libaribb24"; \
+    LIBGSM_FLAGS="--enable-libgsm"; \
   fi && \
     ./configure \
     --pkg-config-flags="--static" \
@@ -739,7 +745,7 @@ RUN cd ffmpeg* && \
     --enable-iconv \
     --enable-lcms2 \
     --enable-libaom \
-    --enable-libaribb24 \
+    $LIBARIBB24_FLAGS \
     --enable-libass \
     --enable-libbluray \
     --enable-libdav1d \
@@ -747,7 +753,7 @@ RUN cd ffmpeg* && \
     --enable-libfreetype \
     --enable-libfribidi \
     --enable-libgme \
-    --enable-libgsm \
+    $LIBGSM_FLAGS \
     --enable-libharfbuzz \
     $LIBJXL_FLAG \
     --enable-libkvazaar \
@@ -769,7 +775,7 @@ RUN cd ffmpeg* && \
     --enable-libspeex \
     $LIBSRT_FLAG \
     $LIBSSH_FLAG \
-    $LIBSVTAV1_FLAG \
+    $LIBSVT_FLAG \
     --enable-libtheora \
     --enable-libtwolame \
     $UAVS3D_FLAG \
