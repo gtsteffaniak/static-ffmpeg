@@ -439,18 +439,14 @@ RUN cd vid.stab-* && \
   make -j$(nproc) install
 RUN echo "Libs.private: -ldl" >> /usr/local/lib/pkgconfig/vidstab.pc
 
-RUN if [ "$MINBUILD" = "true" ]; then \
-  echo "MINBUILD is true, skipping libssh build"; \
-  else \
-    cd x264 && \
+RUN cd x264 && \
     ./configure \
       --enable-pic \
       --enable-static \
       --disable-cli \
       --disable-lavf \
       --disable-swscale && \
-    make -j$(nproc) install; \
-  fi
+    make -j$(nproc) install;
 
 RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     echo "Skipping x265 build"; \
@@ -720,7 +716,6 @@ RUN cd ffmpeg* && \
   fi && \
   if [ "$MINBUILD" != "true" ]; then \
     VPX_FLAG="--enable-libvpx"; \
-    LIBX264_FLAG="--enable-libx264"; \
     LIBSRT_FLAG="--enable-libsrt"; \
     LIBSSH_FLAG="--enable-libssh"; \
     RAV1E_FLAG="--enable-librav1e"; \
@@ -753,6 +748,7 @@ RUN cd ffmpeg* && \
     --enable-libfreetype \
     --enable-libfribidi \
     --enable-libgme \
+    --enable-libx264 \
     $LIBGSM_FLAGS \
     --enable-libharfbuzz \
     $LIBJXL_FLAG \
