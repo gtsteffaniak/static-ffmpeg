@@ -195,13 +195,14 @@ fetch_and_unpack_git game-music-emu "" LIBGME_URL "" LIBGME_COMMIT
 : "${LIBMODPLUG_SHA256:=457ca5a6c179656d66c01505c0d95fafaead4329b9dbaa0f997d00a3508ad9de}"
 fetch_and_unpack libmodplug LIBMODPLUG_VERSION LIBMODPLUG_URL LIBMODPLUG_SHA256
 
+# preferring rav1e-static rav1e-dev from apk (0.7.1)
 # bump: rav1e /RAV1E_VERSION=([\d.]+)/ https://github.com/xiph/rav1e.git|/\d+\./|*
 # bump: rav1e after ./hashupdate Dockerfile RAV1E $LATEST
 # bump: rav1e link "Release notes" https://github.com/xiph/rav1e/releases/tag/v$LATEST
-: "${RAV1E_VERSION:=0.7.1}"
-: "${RAV1E_URL:=https://github.com/xiph/rav1e/archive/v${RAV1E_VERSION}.tar.gz}"
-: "${RAV1E_SHA256:=da7ae0df2b608e539de5d443c096e109442cdfa6c5e9b4014361211cf61d030c}"
-fetch_and_unpack rav1e RAV1E_VERSION RAV1E_URL RAV1E_SHA256
+#: "${RAV1E_VERSION:=0.7.1}"
+#: "${RAV1E_URL:=https://github.com/xiph/rav1e/archive/v${RAV1E_VERSION}.tar.gz}"
+#: "${RAV1E_SHA256:=da7ae0df2b608e539de5d443c096e109442cdfa6c5e9b4014361211cf61d030c}"
+#fetch_and_unpack rav1e RAV1E_VERSION RAV1E_URL RAV1E_SHA256
 
 # bump: vorbis /VORBIS_VERSION=([\d.]+)/ https://github.com/xiph/vorbis.git|*
 # bump: vorbis after ./hashupdate Dockerfile VORBIS $LATEST
@@ -548,15 +549,6 @@ fetch_and_unpack fdk-aac FDK_AAC_VERSION FDK_AAC_URL FDK_AAC_SHA256
 : "${DAVS2_URL:=https://github.com/pkuvcl/davs2/archive/refs/tags/$DAVS2_VERSION.tar.gz}"
 : "${DAVS2_SHA256:=b697d0b376a1c7f7eda3a4cc6d29707c8154c4774358303653f0a9727f923cc8}"
 fetch_and_unpack davs2 DAVS2_VERSION DAVS2_URL DAVS2_SHA256
-
-# bump: libaribb24 /LIBARIBB24_VERSION=([\d.]+)/ https://github.com/nkoriyama/aribb24.git|*
-# bump: libaribb24 after ./hashupdate Dockerfile LIBARIBB24 $LATEST
-# bump: libaribb24 link "Release notes" https://github.com/nkoriyama/aribb24/releases/tag/$LATEST
-: "${LIBARIBB24_VERSION:=1.0.3}"
-: "${LIBARIBB24_URL:=https://github.com/nkoriyama/aribb24/archive/v$LIBARIBB24_VERSION.tar.gz}"
-: "${LIBARIBB24_SHA256:=f61560738926e57f9173510389634d8c06cabedfa857db4b28fb7704707ff128}"
-# Use 'aribb24' as name and strip 1 component to match original behavior (extracts content into 'aribb24' dir)
-fetch_and_unpack aribb24 LIBARIBB24_VERSION LIBARIBB24_URL LIBARIBB24_SHA256 "" 1
 
 # build after libvmaf
 # bump: aom /AOM_VERSION=([\d.]+)/ git:https://aomedia.googlesource.com/aom|*

@@ -49,8 +49,7 @@ RUN apk add --no-cache $APK_OPTS \
   xz-dev xz-static \
   python3 py3-packaging \
   linux-headers \
-  libdrm-dev \
-  musl-dev
+  libdrm-dev
 
 COPY [ "src/", "./" ]
 
@@ -65,12 +64,8 @@ COPY [ "src/", "./" ]
 ARG CFLAGS="-O3 -static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
 ARG CXXFLAGS="-O3 -static-libgcc -fno-strict-overflow -fstack-protector-all -fPIC"
 ARG LDFLAGS="-Wl,-z,relro,-z,now"
-
-# min build removes:
-# encoders: libxeve, libvvenc, libx265, av1
-# decoders: libuavs3d (avs3)
-# image: libjxl, librsvg
-ARG MINBUILD="true"
+# Add a DECODE_ONLY argument
+ARG DECODE_ONLY="false" # Set "true" for decode-only, "false" for full build
 
 RUN cd glib-* && \
   meson setup build \
@@ -79,7 +74,8 @@ RUN cd glib-* && \
     -Dlibmount=disabled && \
   ninja -j$(nproc) -vC build install
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Skip cairo, librsvg, pango if DECODE_ONLY is true (for smaller text rendering footprint if desired)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping cairo build"; \
 else \
   cd cairo-* && \
@@ -109,10 +105,10 @@ RUN if [ "$(uname -m)" = "armv7l" ]; then \
       -Ddefault_library=both \
       -Dintrospection=disabled \
       -Dgtk_doc=false && \
-    ninja -j$(nproc) -v -C build install; \
+    ninja -j$(nproc) -vC build install; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping librsvg build"; \
   else \
     cd librsvg-* && \
@@ -126,9 +122,10 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
       -Dpixbuf-loader=disabled \
       -Dvala=disabled \
       -Dtests=false && \
-    ninja -j$(nproc) -v -C build install; \
+    ninja -j$(nproc) -vC build install; \
   fi
 
+# Keep libva, vmaf is an analysis tool, likely not needed for pure decode unless for verification
 RUN cd libva-* && \
   meson setup build \
     -Dbuildtype=release \
@@ -143,17 +140,16 @@ RUN cd libva-* && \
   ninja -j$(nproc) -vC build install
 
 RUN cd vmaf-*/libvmaf && \
-  meson setup build \
-    -Dbuildtype=release \
-    -Ddefault_library=static \
-    -Dbuilt_in_models=true \
-    -Denable_tests=false \
-    -Denable_docs=false \
-    -Denable_avx512=true \
-    -Denable_float=true && \
-  ninja -j$(nproc) -vC build install
-# extra libs stdc++ is for vmaf https://github.com/Netflix/vmaf/issues/788
-RUN sed -i 's/-lvmaf /-lvmaf -lstdc++ /' /usr/local/lib/pkgconfig/libvmaf.pc
+    meson setup build \
+      -Dbuildtype=release \
+      -Ddefault_library=static \
+      -Dbuilt_in_models=true \
+      -Denable_tests=false \
+      -Denable_docs=false \
+      -Denable_avx512=true \
+      -Denable_float=true && \
+    ninja -j$(nproc) -vC build install; \
+    sed -i 's/-lvmaf /-lvmaf -lstdc++ /' /usr/local/lib/pkgconfig/libvmaf.pc;
 
 RUN cd libass-* && \
   ./configure \
@@ -161,23 +157,28 @@ RUN cd libass-* && \
     --enable-static && \
   make -j$(nproc) && make install
 
-# dec_init rename is to workaround https://code.videolan.org/videolan/libbluray/-/issues/43
-RUN cd libbluray-* && \
-  sed -i 's/dec_init/libbluray_dec_init/' src/libbluray/disc/* && \
-  git clone https://code.videolan.org/videolan/libudfread.git contrib/libudfread && \
-  (cd contrib/libudfread && git checkout --recurse-submodules $LIBUDFREAD_COMMIT) && \
-  autoreconf -fiv && \
-  ./configure \
-    --with-pic \
-    --disable-doxygen-doc \
-    --disable-doxygen-dot \
-    --enable-static \
-    --disable-shared \
-    --disable-examples \
-    --disable-bdjava-jar && \
-  make -j$(nproc) install
+# Remove libbluray (niche)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping libbluray build"; \
+  else \
+    # dec_init rename is to workaround https://code.videolan.org/videolan/libbluray/-/issues/43
+    cd libbluray-* && \
+    sed -i 's/dec_init/libbluray_dec_init/' src/libbluray/disc/* && \
+    git clone https://code.videolan.org/videolan/libudfread.git contrib/libudfread && \
+    (cd contrib/libudfread && git checkout --recurse-submodules $LIBUDFREAD_COMMIT) && \
+    autoreconf -fiv && \
+    ./configure \
+      --with-pic \
+      --disable-doxygen-doc \
+      --disable-doxygen-dot \
+      --enable-static \
+      --disable-shared \
+      --disable-examples \
+      --disable-bdjava-jar && \
+    make -j$(nproc) install; \
+  fi
 
-# build with generic CPU for armv7l. see cross compiling https://aomedia.googlesource.com/aom
+# Keep aom (AV1 decoder)
 RUN cd aom && \
     if [[ $(uname -m) == "armv7l" ]]; then GENERIC_CPU="-DAOM_TARGET_CPU=generic "; else GENERIC_CPU=""; fi && \
     mkdir build_tmp && cd build_tmp && \
@@ -197,81 +198,99 @@ RUN cd aom && \
         .. && \
     make -j$(nproc) install
 
-# has to be before theora
 RUN cd libogg-* && \
   ./configure \
     --disable-shared \
     --enable-static && \
   make -j$(nproc) install
 
-# 1.2.0 does not build
-RUN if [ "$(uname -m)" = "armv7l" ]; then \
-    rm -rf libtheora-* && \
-    curl -Lo libtheora.tar.gz "http://downloads.xiph.org/releases/theora/libtheora-1.1.0.tar.gz" && \
-    tar --no-same-owner --extract --file libtheora.tar.gz && rm -f libtheora.tar.gz && \
-    cd libtheora-* && \
-    ./configure --build=$(arch)-unknown-linux-gnu --disable-examples --disable-oggtest --disable-shared --enable-static && \
-    make -j$(nproc) install; \
+# Remove libtheora (older, niche video codec)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping libtheora build"; \
   else \
-    cd libtheora-* && \
-    ./configure --build=$(arch)-unknown-linux-gnu --disable-examples --disable-oggtest --disable-shared --enable-static && \
-    make -j$(nproc) install; \
+    # 1.2.0 does not build
+    if [ "$(uname -m)" = "armv7l" ]; then \
+        rm -rf libtheora-* && \
+        curl -Lo libtheora.tar.gz "http://downloads.xiph.org/releases/theora/libtheora-1.1.0.tar.gz" && \
+        tar --no-same-owner --extract --file libtheora.tar.gz && rm -f libtheora.tar.gz && \
+        cd libtheora-* && \
+        ./configure --build=$(arch)-unknown-linux-gnu --disable-examples --disable-oggtest --disable-shared --enable-static && \
+        make -j$(nproc) install; \
+      else \
+        cd libtheora-* && \
+        ./configure --build=$(arch)-unknown-linux-gnu --disable-examples --disable-oggtest --disable-shared --enable-static && \
+        make -j$(nproc) install; \
+      fi; \
   fi
 
-RUN if [ "$MINBUILD" ]; then \
-    echo "Skipping aribb24 build"; \
+# Remove davs2 (very niche)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping davs2 build"; \
   else \
-    cd aribb24-* && \
-    autoreconf -fiv && \
+    # TODO: seems to be issues with asm on musl
+    cd davs2-*/build/linux && \
     ./configure \
-      --enable-static \
-      --disable-shared && \
-    make -j$(nproc) && make install; \
+      --disable-asm \
+      --enable-pic \
+      --enable-strip \
+      --disable-cli && \
+    make -j$(nproc) install; \
   fi
 
-# TODO: seems to be issues with asm on musl
-RUN cd davs2-*/build/linux && \
-  ./configure \
-    --disable-asm \
-    --enable-pic \
-    --enable-strip \
-    --disable-cli && \
-  make -j$(nproc) install
+# Remove fdk-aac (encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping fdk-aac build"; \
+  else \
+    cd fdk-aac-* && \
+    ./autogen.sh && \
+    ./configure \
+      --disable-shared \
+      --enable-static && \
+    make -j$(nproc) install; \
+  fi
 
-RUN cd fdk-aac-* && \
-  ./autogen.sh && \
-  ./configure \
-    --disable-shared \
-    --enable-static && \
-  make -j$(nproc) install
+# Remove libgsm (niche audio encoder/decoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping libgsm build"; \
+  else \
+    cd libgsm && \
+    # Makefile is hard to use, hence use specific compile arguments and flags
+    # no need to build toast cli tool \
+    rm src/toast* && \
+    SRC=$(echo src/*.c) && \
+    gcc ${CFLAGS} -c -ansi -pedantic -s -DNeedFunctionPrototypes=1 -Wall -Wno-comment -DSASR -DWAV49 -DNDEBUG -I./inc ${SRC} && \
+    ar cr libgsm.a *.o && ranlib libgsm.a && \
+    mkdir -p /usr/local/include/gsm && \
+    cp inc/*.h /usr/local/include/gsm && \
+    cp libgsm.a /usr/local/lib; \
+  fi
 
-RUN cd libgsm && \
-  # Makefile is hard to use, hence use specific compile arguments and flags
-  # no need to build toast cli tool \
-  rm src/toast* && \
-  SRC=$(echo src/*.c) && \
-  gcc ${CFLAGS} -c -ansi -pedantic -s -DNeedFunctionPrototypes=1 -Wall -Wno-comment -DSASR -DWAV49 -DNDEBUG -I./inc ${SRC} && \
-  ar cr libgsm.a *.o && ranlib libgsm.a && \
-  mkdir -p /usr/local/include/gsm && \
-  cp inc/*.h /usr/local/include/gsm && \
-  cp libgsm.a /usr/local/lib
+# Remove kvazaar (HEVC encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping kvazaar build"; \
+  else \
+    cd kvazaar-* && \
+    ./autogen.sh && \
+    ./configure \
+      --disable-shared \
+      --enable-static && \
+    make -j$(nproc) install; \
+  fi
 
-RUN cd kvazaar-* && \
-  ./autogen.sh && \
-  ./configure \
-    --disable-shared \
-    --enable-static && \
-  make -j$(nproc) install
-
-RUN cd lame-* && \
-  ./configure \
-    --disable-shared \
-    --enable-static \
-    --enable-nasm \
-    --disable-gtktest \
-    --disable-cpml \
-    --disable-frontend && \
-  make -j$(nproc) install
+# Remove lame (MP3 encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping lame build"; \
+  else \
+    cd lame-* && \
+    ./configure \
+      --disable-shared \
+      --enable-static \
+      --enable-nasm \
+      --disable-gtktest \
+      --disable-cpml \
+      --disable-frontend && \
+    make -j$(nproc) install; \
+  fi
 
 RUN cd lcms2-* && \
   ./autogen.sh && \
@@ -280,12 +299,18 @@ RUN cd lcms2-* && \
     --disable-shared && \
   make -j$(nproc) install
 
-RUN cd opencore-amr-* && \
-  ./configure \
-    --enable-static \
-    --disable-shared && \
-  make -j$(nproc) install
+# Remove opencore-amr (niche audio)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping opencore-amr build"; \
+  else \
+    cd opencore-amr-* && \
+    ./configure \
+      --enable-static \
+      --disable-shared && \
+    make -j$(nproc) install; \
+  fi
 
+# Keep openjpeg (JPEG 2000 decoder)
 RUN cd openjpeg-* && \
   mkdir build && cd build && \
   cmake \
@@ -300,6 +325,7 @@ RUN cd openjpeg-* && \
     .. && \
   make -j$(nproc) install
 
+# Keep opus (decoder)
 RUN cd opus-* && \
   ./configure \
     --disable-shared \
@@ -308,52 +334,78 @@ RUN cd opus-* && \
     --disable-doc && \
   make -j$(nproc) install
 
-RUN cd rabbitmq-c-* && \
-  mkdir build && cd build && \
-  cmake \
-    -G"Unix Makefiles" \
-    -DCMAKE_VERBOSE_MAKEFILE=ON \
-    -DBUILD_EXAMPLES=OFF \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_STATIC_LIBS=ON \
-    -DCMAKE_INSTALL_PREFIX=/usr/local \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_TESTS=OFF \
-    -DBUILD_TOOLS=OFF \
-    -DBUILD_TOOLS_DOCS=OFF \
-    -DRUN_SYSTEM_TESTS=OFF \
-    .. && \
-  make -j$(nproc) install
+# Remove rabbitmq-c (networking)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping rabbitmq-c build"; \
+  else \
+    cd rabbitmq-c-* && \
+    mkdir build && cd build && \
+    cmake \
+      -G"Unix Makefiles" \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DBUILD_EXAMPLES=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_STATIC_LIBS=ON \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TESTS=OFF \
+      -DBUILD_TOOLS=OFF \
+      -DBUILD_TOOLS_DOCS=OFF \
+      -DRUN_SYSTEM_TESTS=OFF \
+      .. && \
+    make -j$(nproc) install; \
+  fi
 
-RUN cd rtmpdump && \
-  make SYS=posix SHARED=off -j$(nproc) install
+# Remove rtmpdump (networking)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping rtmpdump build"; \
+  else \
+    cd rtmpdump && \
+    make SYS=posix SHARED=off -j$(nproc) install; \
+  fi
 
-RUN cd rubberband-* && \
-  meson setup build \
-    -Ddefault_library=static \
-    -Dfft=fftw \
-    -Dresampler=libsamplerate && \
-  ninja -j$(nproc) -vC build install && \
-  echo "Requires.private: fftw3 samplerate" >> /usr/local/lib/pkgconfig/rubberband.pc
+# Remove rubberband (audio processing)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping rubberband build"; \
+  else \
+    cd rubberband-* && \
+    meson setup build \
+      -Ddefault_library=static \
+      -Dfft=fftw \
+      -Dresampler=libsamplerate && \
+    ninja -j$(nproc) -vC build install && \
+    echo "Requires.private: fftw3 samplerate" >> /usr/local/lib/pkgconfig/rubberband.pc; \
+  fi
 
-RUN cd shine* && \
-  ./configure \
-    --with-pic \
-    --enable-static \
-    --disable-shared \
-    --disable-fast-install && \
-  make -j$(nproc) install
+# Remove shine (MP3 encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping shine build"; \
+  else \
+    cd shine* && \
+    ./configure \
+      --with-pic \
+      --enable-static \
+      --disable-shared \
+      --disable-fast-install && \
+    make -j$(nproc) install; \
+  fi
 
-RUN cd speex-* && \
-  ./autogen.sh && \
-  ./configure \
-    --disable-shared \
-    --enable-static && \
-  make -j$(nproc) install
+# Remove speex (voice codec)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping speex build"; \
+  else \
+    cd speex-* && \
+    ./autogen.sh && \
+    ./configure \
+      --disable-shared \
+      --enable-static && \
+    make -j$(nproc) install; \
+  fi
 
-RUN if [ "$MINBUILD" = "true" ]; then \
-    echo "MINBUILD is true, skipping libssh build"; \
+# Remove libssh (networking)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "DECODE_ONLY is true, skipping libssh build"; \
   else \
     cd libssh* && \
     mkdir build && cd build && \
@@ -385,7 +437,8 @@ RUN if [ "$MINBUILD" = "true" ]; then \
     make install; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ]; then \
+# Remove SVT-AV1 (AV1 encoder)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
     echo "Skipping SVT-AV1 build"; \
   else \
     cd SVT-AV1-*/Build && \
@@ -400,16 +453,22 @@ RUN if [ "$(uname -m)" = "armv7l" ]; then \
     make -j$(nproc) install; \
   fi
 
-RUN cd twolame-* && \
-  ./configure \
-    --disable-shared \
-    --enable-static \
-    --disable-sndfile \
-    --with-pic && \
-  make -j$(nproc) install
+# Remove twolame (MP2 encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping twolame build"; \
+  else \
+    cd twolame-* && \
+    ./configure \
+      --disable-shared \
+      --enable-static \
+      --disable-sndfile \
+      --with-pic && \
+    make -j$(nproc) install; \
+  fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
-    echo "Skipping uavs3d build"; \
+# Remove uavs3d (AVS3 decoder - niche, already in your DECODE_ONLY section)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
+  echo "Skipping uavs3d build"; \
   else \
     cd uavs3d && \
       sed -i '/armv7\.c/d' source/CMakeLists.txt && \
@@ -423,32 +482,41 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
       make -j$(nproc) install; \
   fi
 
-RUN cd vid.stab-* && \
-  mkdir build && cd build && \
-  # This line workarounds the issue that happens when the image builds in emulated (buildx) arm64 environment.
-  # Since in emulated container the /proc is mounted from the host, the cmake not able to detect CPU features correctly.
-  sed -i 's/include (FindSSE)/if(CMAKE_SYSTEM_ARCH MATCHES "amd64")\ninclude (FindSSE)\nendif()/' ../CMakeLists.txt && \
-  cmake \
-    -G"Unix Makefiles" \
-    -DCMAKE_VERBOSE_MAKEFILE=ON \
-    -DCMAKE_SYSTEM_ARCH=$(arch) \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DUSE_OMP=ON \
-    .. && \
-  make -j$(nproc) install
-RUN echo "Libs.private: -ldl" >> /usr/local/lib/pkgconfig/vidstab.pc
+# Remove vid.stab (video processing)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping vid.stab build"; \
+  else \
+    cd vid.stab-* && \
+    mkdir build && cd build && \
+    sed -i 's/include (FindSSE)/if(CMAKE_SYSTEM_ARCH MATCHES "amd64")\ninclude (FindSSE)\nendif()/' ../CMakeLists.txt && \
+    cmake \
+      -G"Unix Makefiles" \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DCMAKE_SYSTEM_ARCH=$(arch) \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DUSE_OMP=ON \
+      .. && \
+    make -j$(nproc) install; \
+    echo "Libs.private: -ldl" >> /usr/local/lib/pkgconfig/vidstab.pc; \
+  fi
 
-RUN cd x264 && \
+# Remove x264 (encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping x264 build"; \
+  else \
+    cd x264 && \
     ./configure \
       --enable-pic \
       --enable-static \
       --disable-cli \
       --disable-lavf \
       --disable-swscale && \
-    make -j$(nproc) install;
+    make -j$(nproc) install; \
+  fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Remove x265 (HEVC encoder)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
     echo "Skipping x265 build"; \
   else \
     cd x265-*/build/linux && \
@@ -460,11 +528,17 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
       make -C 8bit -j$(nproc) install; \
   fi
 
-RUN cd xvidcore-*/build/generic && \
-  CFLAGS="$CFLAGS -fstrength-reduce -ffast-math" ./configure && \
-  make -j$(nproc) && make install
+# Remove xvidcore (old video encoder)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping xvidcore build"; \
+  else \
+    cd xvidcore-*/build/generic && \
+    CFLAGS="$CFLAGS -fstrength-reduce -ffast-math" ./configure && \
+    make -j$(nproc) && make install; \
+  fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Remove xeve (HEVC encoder)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping xeve build"; \
   else \
     cd xeve-* && \
@@ -479,7 +553,8 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     ln -s /usr/local/lib/xeve/libxeve.a /usr/local/lib/libxeve.a; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Remove xevd (VVC/H.266 encoder)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping xevd build"; \
   else \
     cd xevd-* && \
@@ -494,7 +569,8 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     ln -s /usr/local/lib/xevd/libxevd.a /usr/local/lib/libxevd.a; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Remove libjxl (image codec - already in your DECODE_ONLY)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping libjxl build"; \
   else \
     set -e && \
@@ -523,7 +599,7 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     cmake --install build; \
   fi
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
     echo "Skipping libjxl build"; \
   else \
     sed -i 's/-ljxl/-ljxl -lstdc++ /' /usr/local/lib/pkgconfig/libjxl.pc && \
@@ -531,20 +607,22 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     sed -i 's/-ljxl_threads/-ljxl_threads -lstdc++ /' /usr/local/lib/pkgconfig/libjxl_threads.pc; \
   fi
 
+# hardware acceleration for intel cpu
 RUN cd libvpl-* && \
-  cmake -B build \
-    -G"Unix Makefiles" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_VERBOSE_MAKEFILE=ON \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_INSTALL_PREFIX=/usr/local \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_TESTS=OFF \
-    -DENABLE_WARNING_AS_ERROR=ON && \
-  cmake --build build -j$(nproc) && \
-  cmake --install build
+    cmake -B build \
+      -G"Unix Makefiles" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_TESTS=OFF \
+      -DENABLE_WARNING_AS_ERROR=ON && \
+    cmake --build build -j$(nproc) && \
+    cmake --install build;
 
-RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
+# Remove vvenc (HEVC encoder)
+RUN if [ "$(uname -m)" = "armv7l" ] || [ "$DECODE_ONLY" = "true" ]; then \
   echo "Skipping vvenc build"; \
   else \
   cd vvenc-* && \
@@ -559,47 +637,57 @@ RUN if [ "$(uname -m)" = "armv7l" ] || [ "$MINBUILD" ]; then \
     cmake --build build/release-static --target install; \
   fi
 
+# Keep dav1d (AV1 decoder)
 RUN cd dav1d-* && \
   meson setup build \
     -Dbuildtype=release \
     -Ddefault_library=static && \
   ninja -j$(nproc) -vC build install
 
-RUN cd game-music-emu && \
-  mkdir build && cd build && \
-  cmake \
-    -G"Unix Makefiles" \
-    -DCMAKE_VERBOSE_MAKEFILE=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DENABLE_UBSAN=OFF \
-    .. && \
-  make -j$(nproc) install
-
-RUN cd libmodplug-* && \
-  ./configure \
-    --disable-shared \
-    --enable-static && \
-  make -j$(nproc) install
-
-RUN if [ "$MINBUILD" = "true" ]; then \
-  echo "MINBUILD is true, skipping libssh build"; \
+# Remove game-music-emu (niche audio)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping game-music-emu build"; \
   else \
-    cd rav1e-* && \
-    # workaround weird cargo problem when on aws (?) weirdly alpine edge seems to work
-    CARGO_REGISTRIES_CRATES_IO_PROTOCOL="sparse" \
-    RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo cinstall --release; \
+    cd game-music-emu && \
+    mkdir build && cd build && \
+    cmake \
+      -G"Unix Makefiles" \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DENABLE_UBSAN=OFF \
+      .. && \
+    make -j$(nproc) install; \
   fi
 
-RUN cd zeromq-* && \
-  # fix sha1_init symbol collision with libssh
-  grep -r -l sha1_init external/sha1* | xargs sed -i 's/sha1_init/zeromq_sha1_init/g' && \
-  ./configure \
-    --disable-shared \
-    --enable-static && \
-  make -j$(nproc) install
+# Remove libmodplug (niche audio)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping libmodplug build"; \
+  else \
+    cd libmodplug-* && \
+    ./configure \
+      --disable-shared \
+      --enable-static && \
+    make -j$(nproc) install; \
+  fi
 
+# Remove rav1e (AV1 encoder)
+RUN apk add rav1e-static rav1e-dev
+
+# Remove zeromq (networking)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping zeromq build"; \
+  else \
+    cd zeromq-* && \
+    # fix sha1_init symbol collision with libssh
+    grep -r -l sha1_init external/sha1* | xargs sed -i 's/sha1_init/zeromq_sha1_init/g' && \
+    ./configure \
+      --disable-shared \
+      --enable-static && \
+    make -j$(nproc) install; \
+  fi
+
+# Keep zimg (image processing for decode, scaling etc.)
 RUN cd zimg-* && \
   ./autogen.sh && \
   ./configure \
@@ -607,8 +695,9 @@ RUN cd zimg-* && \
     --enable-static && \
   make -j$(nproc) install
 
-RUN if [ "$MINBUILD" = "true" ]; then \
-  echo "MINBUILD is true, skipping libssh build"; \
+# Remove srt (networking)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+  echo "DECODE_ONLY is true, skipping srt build"; \
   else \
     cd srt-* && \
     mkdir build && cd build && \
@@ -629,6 +718,7 @@ RUN if [ "$MINBUILD" = "true" ]; then \
     make -j$(nproc) && make install; \
   fi
 
+# Keep libwebp (decoder)
 RUN cd libwebp-* && \
   ./autogen.sh && \
   ./configure \
@@ -646,29 +736,17 @@ RUN cd libwebp-* && \
     --disable-gif && \
   make -j$(nproc) install
 
-RUN if [ "$MINBUILD" = "true" ]; then \
-  echo "MINBUILD is true, skipping libvpx build"; \
-  elif [ "$(uname -m)" = "armv7l" ]; then \
-    cd libvpx-* && \
-    ./configure \
-      --enable-static \
-      --enable-vp9-highbitdepth \
-      --disable-shared \
-      --disable-unit-tests \
-      --disable-examples \
-      --target=armv7-linux-gcc && \
-    make -j$(nproc) install; \
-  else \
-    cd libvpx-* && \
+# Keep libvpx (VP8/VP9 decoder)
+RUN cd libvpx-* && \
     ./configure \
       --enable-static \
       --enable-vp9-highbitdepth \
       --disable-shared \
       --disable-unit-tests \
       --disable-examples && \
-    make -j$(nproc) install; \
-  fi
+    make -j$(nproc) install;
 
+# Keep libvorbis (decoder)
 RUN cd libvorbis-* && \
   ./configure \
     --disable-shared \
@@ -676,53 +754,75 @@ RUN cd libvorbis-* && \
     --disable-oggtest && \
   make -j$(nproc) install
 
-RUN cd libmysofa-*/build && \
-  cmake \
-    -G"Unix Makefiles" \
-    -DCMAKE_VERBOSE_MAKEFILE=ON \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_TESTS=OFF \
-    .. && \
-  make -j$(nproc) install
+# Remove libmysofa (niche audio)
+RUN if [ "$DECODE_ONLY" = "true" ]; then \
+    echo "Skipping libmysofa build"; \
+  else \
+    cd libmysofa-*/build && \
+    cmake \
+      -G"Unix Makefiles" \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TESTS=OFF \
+      .. && \
+    make -j$(nproc) install; \
+  fi
 
-# sed changes --toolchain=hardened -pie to -static-pie
-#
-# ldflags stack-size=2097152 is to increase default stack size from 128KB (musl default) to something
-# more similar to glibc (2MB). This fixing segfault with libaom-av1 and libsvtav1 as they seems to pass
-# large things on the stack.
-#
-# --enable-small to optimize for smaller size of the ffmpeg binary.
-#
-# ldfalgs -Wl,--allow-multiple-definition is a workaround for linking with multiple rust staticlib to
-# not cause collision in toolchain symbols, see comment in checkdupsym script for details.
+
+# =======================================================================================
+# FFmpeg Configure step (this is the most important part for decode-only)
+# =======================================================================================
+
 RUN cd ffmpeg* && \
   sed -i 's/svt_av1_enc_init_handle(&svt_enc->svt_handle, svt_enc, &svt_enc->enc_params)/svt_av1_enc_init_handle(\&svt_enc->svt_handle, \&svt_enc->enc_params)/g' libavcodec/libsvtav1.c && \
-  if [[ -n "$ENABLE_FDKAAC" ]]; then \
+  # Conditional flags based on DECODE_ONLY
+  if [ "$DECODE_ONLY" != "true" ]; then \
     FDKAAC_FLAGS="--enable-libfdk-aac --enable-nonfree"; \
-  else \
-    FDKAAC_FLAGS=""; \
-  fi && \
-  if [ "$(uname -m)" != "armv7l" ] && [ "$MINBUILD" != "true" ]; then \
-  LIBRSVG_FLAG="--enable-librsvg"; \
-    UAVS3D_FLAG="--enable-libuavs3d"; \
+    LIBX264_FLAG="--enable-libx264"; \
+    RAV1E_FLAG="--enable-librav1e"; \
+    LIBSVT_FLAG="--enable-libsvtav1"; \
     LIBX265_FLAG="--enable-libx265"; \
     LIBEXEV_FLAG="--enable-libxeve"; \
     LIBEXVD_FLAG="--enable-libxevd"; \
     LIBVVENC_FLAG="--enable-libvvenc"; \
+    LIBBLURAY_FLAG="--enable-libbluray"; \
+    LIBDAVS2_FLAG="--enable-libdavs2"; \
+    LIBGME_FLAG="--enable-libgme"; \
+    LIBGSM_FLAGS="--enable-libgsm"; \
+    LIBMODPLUG_FLAG="--enable-libmodplug"; \
+    LIBMYSOFA_FLAG="--enable-libmysofa"; \
+    LIBOPENCOREAMR_FLAG="--enable-libopencore-amrnb --enable-libopencore-amrwb"; \
+    LIBRTMP_FLAG="--enable-librtmp"; \
+    LIBRUBBERBAND_FLAG="--enable-librubberband"; \
+    LIBSHINE_FLAG="--enable-libshine"; \
+    LIBSPEEX_FLAG="--enable-libspeex"; \
+    LIBTHEORA_FLAG="--enable-libtheora"; \
+    LIBTWOLAME_FLAG="--enable-libtwolame"; \
+    UAVS3D_FLAG="--enable-libuavs3d"; \
+    LIBVIDSTAB_FLAG="--enable-libvidstab"; \
+    LIBVMAF_FLAG="--enable-libvmaf"; \
+    LIBVOAMRWBENC_FLAG="--enable-libvo-amrwbenc"; \
     LIBJXL_FLAG="--enable-libjxl"; \
-    LIBSVT_FLAG="--enable-libsvtav1"; \
-  fi && \
-  if [ "$MINBUILD" != "true" ]; then \
-    VPX_FLAG="--enable-libvpx"; \
+    LIBRSVG_FLAG="--enable-librsvg"; \
+    LIBRABBITMQ_FLAG="--enable-librabbitmq"; \
     LIBSRT_FLAG="--enable-libsrt"; \
     LIBSSH_FLAG="--enable-libssh"; \
-    RAV1E_FLAG="--enable-librav1e"; \
-    LIBSOXR_FLAG="--enable-libsoxr"; \
-    LIBARIBB24_FLAGS="--enable-libaribb24"; \
-    LIBGSM_FLAGS="--enable-libgsm"; \
+    LIBZM_FLAG="--enable-libzmq"; \
+    LIBKVZ_FLAG="--enable-libkvazaar"; \
+    LIBMP3LAME_FLAG="--enable-libmp3lame"; \
+    LIBSHINE_FLAG="--enable-libshine"; \
+    LIBXVID_FLAG="--enable-libxvid"; \
   fi && \
+    PKG_CONFIG_PATH="/usr/lib/pkgconfig/:${PKG_CONFIG_PATH}" && \
+    # VPX is a critical decoder for web video, so keep it for DECODE_ONLY
+    VPX_FLAG="--enable-libvpx" && \
+    # SOXR is for high-quality resampling, might be good for decode even if not encoding
+    LIBSOXR_FLAG="--enable-libsoxr" && \
+    # Opus and Vorbis are good decoders to keep for common web formats
+    LIBOPUS_FLAG="--enable-libopus" && \
+    LIBVORBIS_FLAG="--enable-libvorbis" && \
     ./configure \
     --pkg-config-flags="--static" \
     --extra-cflags="$CFLAGS" \
@@ -733,6 +833,7 @@ RUN cd ffmpeg* && \
     --disable-ffplay \
     --enable-static \
     --enable-gpl \
+    --enable-libvpl \
     --enable-version3 \
     $FDKAAC_FLAGS \
     --enable-fontconfig \
@@ -740,46 +841,44 @@ RUN cd ffmpeg* && \
     --enable-iconv \
     --enable-lcms2 \
     --enable-libaom \
-    $LIBARIBB24_FLAGS \
+    $LIBKVZ_FLAG \
     --enable-libass \
-    --enable-libbluray \
+    $LIBBLURAY_FLAG \
     --enable-libdav1d \
-    --enable-libdavs2 \
+    $LIBDAVS2_FLAG \
     --enable-libfreetype \
     --enable-libfribidi \
-    --enable-libgme \
-    --enable-libx264 \
+    $LIBMP3LAME_FLAG \
+    $LIBGME_FLAG \
+    $LIBX264_FLAG \
     $LIBGSM_FLAGS \
     --enable-libharfbuzz \
     $LIBJXL_FLAG \
-    --enable-libkvazaar \
-    --enable-libmodplug \
-    --enable-libmp3lame \
-    --enable-libmysofa \
-    --enable-libopencore-amrnb \
-    --enable-libopencore-amrwb \
+    $LIBMODPLUG_FLAG \
+    $LIBMYSOFA_FLAG \
+    $LIBOPENCOREAMR_FLAG \
     --enable-libopenjpeg \
-    --enable-libopus \
-    --enable-librabbitmq \
+    $LIBOPUS_FLAG \
+    $LIBRABBITMQ_FLAG \
     $RAV1E_FLAG \
     $LIBRSVG_FLAG \
-    --enable-librtmp \
-    --enable-librubberband \
-    --enable-libshine \
+    $LIBRTMP_FLAG \
+    $LIBRUBBERBAND_FLAG \
+    $LIBSHINE_FLAG \
     --enable-libsnappy \
     $LIBSOXR_FLAG \
-    --enable-libspeex \
+    $LIBSPEEX_FLAG \
     $LIBSRT_FLAG \
     $LIBSSH_FLAG \
     $LIBSVT_FLAG \
-    --enable-libtheora \
-    --enable-libtwolame \
+    $LIBTHEORA_FLAG \
+    $LIBTWOLAME_FLAG \
     $UAVS3D_FLAG \
-    --enable-libvidstab \
-    --enable-libvmaf \
-    --enable-libvo-amrwbenc \
-    --enable-libvorbis \
-    --enable-libvpl \
+    $LIBVIDSTAB_FLAG \
+    $LIBVMAF_FLAG \
+    $LIBVOAMRWBENC_FLAG \
+    $LIBVORBIS_FLAG \
+    $LIBVPL_FLAG \
     $VPX_FLAG \
     $LIBVVENC_FLAG \
     --enable-libwebp \
@@ -788,9 +887,9 @@ RUN cd ffmpeg* && \
     $LIBEXVD_FLAG \
     $LIBEXEV_FLAG \
     --enable-libxml2 \
-    --enable-libxvid \
+    $LIBXVID_FLAG \
     --enable-libzimg \
-    --enable-libzmq \
+    $LIBZM_FLAG \
     --enable-small \
     --enable-openssl \
   || (cat ffbuild/config.log ; false) && \
